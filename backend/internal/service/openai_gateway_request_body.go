@@ -130,17 +130,31 @@ func deleteOpenAIResponsesNoneReasoningEffortFromObject(account *Account, body m
 // normalizeDeepSeekResponsesRequestBody 适配无状态 CN Responses 端点：
 // 强制 store=false 并清除 previous_response_id（DeepSeek / Kimi 官方
 // Responses 均不支持服务端状态存储，携带这些字段会被拒绝）。
-// 非原生 Responses 协议账号原样返回。
+//
+// DeepSeek 另需把 Codex/OpenAI 的 input_image.image_url 写成线上 serde
+// 要求的 url 字段；openai 平台但 base_url 指向 api.deepseek.com 的映射
+// 账号同样走这条出站改写（Codex 贴图会 422 missing field url）。
+// 非 CN / 非 DeepSeek 上游原样返回。
 func normalizeDeepSeekResponsesRequestBody(account *Account, body []byte) []byte {
-	if account == nil || !account.UsesNativeCNResponses() {
+	if account == nil {
 		return body
 	}
-	normalized, err := sjson.SetBytes(body, "store", false)
-	if err != nil {
+	applyStateless := account.UsesNativeCNResponses()
+	applyImages := shouldAliasDeepSeekResponsesInputImages(account)
+	if !applyStateless && !applyImages {
 		return body
 	}
-	if stripped, err := sjson.DeleteBytes(normalized, "previous_response_id"); err == nil {
-		normalized = stripped
+
+	normalized := body
+	if applyStateless {
+		patched, err := sjson.SetBytes(normalized, "store", false)
+		if err != nil {
+			return body
+		}
+		normalized = patched
+		if stripped, err := sjson.DeleteBytes(normalized, "previous_response_id"); err == nil {
+			normalized = stripped
+		}
 	}
 
 	var requestBody map[string]any
@@ -151,16 +165,183 @@ func normalizeDeepSeekResponsesRequestBody(account *Account, body []byte) []byte
 	if !exists {
 		return normalized
 	}
-	liftedInput, changed := apicompat.LiftResponsesToolOutputMedia(input)
+
+	changed := false
+	if liftedInput, lifted := apicompat.LiftResponsesToolOutputMedia(input); lifted {
+		requestBody["input"] = liftedInput
+		input = liftedInput
+		changed = true
+	}
+	if applyImages {
+		if aliased, aliasedChanged := aliasDeepSeekResponsesInputImages(input); aliasedChanged {
+			requestBody["input"] = aliased
+			changed = true
+		}
+	}
 	if !changed {
 		return normalized
 	}
-	requestBody["input"] = liftedInput
 	rebuilt, err := marshalOpenAIUpstreamJSON(requestBody)
 	if err != nil {
 		return normalized
 	}
 	return rebuilt
+}
+
+func shouldAliasDeepSeekResponsesInputImages(account *Account) bool {
+	return targetsDeepSeekAPIHost(account)
+}
+
+// aliasDeepSeekResponsesInputImages 把图片 part 改写成 DeepSeek 能反序列化
+// 的形状：type=input_image，同时带字符串字段 image_url 与 url。
+// 文档与部分 400 提 image_url；线上 serde 要求 url。只发其中一个都会踩坑。
+// 仅有 file_id、没有可用 URL 的 part 原样保留。
+func aliasDeepSeekResponsesInputImages(input any) (any, bool) {
+	items, ok := asDeepSeekResponsesSlice(input)
+	if !ok {
+		return input, false
+	}
+	changed := false
+	for i, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if aliasDeepSeekResponsesInputItem(item) {
+			items[i] = item
+			changed = true
+		}
+	}
+	if !changed {
+		return input, false
+	}
+	return items, true
+}
+
+func aliasDeepSeekResponsesInputItem(item map[string]any) bool {
+	changed := aliasDeepSeekResponsesImagePart(item)
+	if content, exists := item["content"]; exists {
+		if rewritten, did := aliasDeepSeekResponsesContent(content); did {
+			item["content"] = rewritten
+			changed = true
+		}
+	}
+	if output, exists := item["output"]; exists {
+		if rewritten, did := aliasDeepSeekResponsesContent(output); did {
+			item["output"] = rewritten
+			changed = true
+		}
+	}
+	return changed
+}
+
+func aliasDeepSeekResponsesContent(content any) (any, bool) {
+	parts, ok := asDeepSeekResponsesSlice(content)
+	if !ok {
+		return content, false
+	}
+	changed := false
+	for i, raw := range parts {
+		part, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if aliasDeepSeekResponsesImagePart(part) {
+			parts[i] = part
+			changed = true
+		}
+	}
+	if !changed {
+		return content, false
+	}
+	return parts, true
+}
+
+func aliasDeepSeekResponsesImagePart(part map[string]any) bool {
+	partType := strings.TrimSpace(stringValue(part["type"]))
+	switch partType {
+	case "input_image", "image_url", "image":
+	default:
+		return false
+	}
+	imageURL := extractDeepSeekResponsesImageURL(part)
+	if imageURL == "" {
+		return false
+	}
+	changed := false
+	if partType != "input_image" {
+		part["type"] = "input_image"
+		changed = true
+	}
+	if current, ok := part["image_url"].(string); !ok || strings.TrimSpace(current) != imageURL {
+		part["image_url"] = imageURL
+		changed = true
+	}
+	if current, ok := part["url"].(string); !ok || strings.TrimSpace(current) != imageURL {
+		part["url"] = imageURL
+		changed = true
+	}
+	return changed
+}
+
+func extractDeepSeekResponsesImageURL(part map[string]any) string {
+	if imageURL := deepSeekResponsesURLValue(part["url"]); imageURL != "" {
+		return imageURL
+	}
+	if imageURL := deepSeekResponsesURLValue(part["image_url"]); imageURL != "" {
+		return imageURL
+	}
+	if imageURL := deepSeekResponsesURLValue(part["image"]); imageURL != "" {
+		return imageURL
+	}
+	source, ok := part["source"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	if imageURL := deepSeekResponsesURLValue(source["url"]); imageURL != "" {
+		return imageURL
+	}
+	data := strings.TrimSpace(stringValue(source["data"]))
+	if data == "" {
+		return ""
+	}
+	if strings.HasPrefix(strings.ToLower(data), "data:") {
+		return data
+	}
+	mediaType := strings.TrimSpace(stringValue(source["media_type"]))
+	if mediaType == "" {
+		mediaType = "image/png"
+	}
+	return "data:" + mediaType + ";base64," + data
+}
+
+func deepSeekResponsesURLValue(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case map[string]any:
+		if imageURL := strings.TrimSpace(stringValue(typed["url"])); imageURL != "" {
+			return imageURL
+		}
+		return strings.TrimSpace(stringValue(typed["image_url"]))
+	default:
+		return ""
+	}
+}
+
+func asDeepSeekResponsesSlice(value any) ([]any, bool) {
+	switch items := value.(type) {
+	case []any:
+		return items, true
+	case []map[string]any:
+		out := make([]any, len(items))
+		for i := range items {
+			out[i] = items[i]
+		}
+		return out, true
+	default:
+		return nil, false
+	}
 }
 
 func trimOpenAIEncryptedReasoningItems(reqBody map[string]any) bool {
@@ -808,7 +989,7 @@ func (s *OpenAIGatewayService) replaceModelInResponseBody(body []byte, fromModel
 	return body
 }
 
-func getOpenAIReasoningEffortFromReqBody(reqBody map[string]any, requestedModel string) (value string, present bool) {
+func getOpenAIReasoningEffortFromReqBody(account *Account, reqBody map[string]any, requestedModel string) (value string, present bool) {
 	if reqBody == nil {
 		return "", false
 	}
@@ -816,13 +997,13 @@ func getOpenAIReasoningEffortFromReqBody(reqBody map[string]any, requestedModel 
 	// Primary: reasoning.effort
 	if reasoning, ok := reqBody["reasoning"].(map[string]any); ok {
 		if effort, ok := reasoning["effort"].(string); ok {
-			return normalizeOpenAIReasoningEffortForModel(effort, requestedModel), true
+			return normalizeOpenAIReasoningEffortForAccountModel(account, effort, requestedModel), true
 		}
 	}
 
 	// Fallback: some clients may use a flat field.
 	if effort, ok := reqBody["reasoning_effort"].(string); ok {
-		return normalizeOpenAIReasoningEffortForModel(effort, requestedModel), true
+		return normalizeOpenAIReasoningEffortForAccountModel(account, effort, requestedModel), true
 	}
 
 	return "", false
@@ -1470,15 +1651,16 @@ func isOpenAICodexModel(model string) bool {
 
 // extractOpenAIReasoningEffortFromBody 按优先级传入模型候选（如 upstreamModel,
 // billingModel, originalModel）：显式 effort 的模型归一化（max 保留判定）用第一个
-// 非空候选；body 未携带 effort 时的模型后缀推导依次尝试每个候选——OAuth 的
-// normalizeCodexModel 会剥掉 upstreamModel 的 effort 后缀，只有原始模型名还留着。
-func extractOpenAIReasoningEffortFromBody(body []byte, modelCandidates ...string) *string {
+// 非空候选（account 同步过该模型的上游推理档位时以其为准）；body 未携带 effort
+// 时的模型后缀推导依次尝试每个候选——OAuth 的 normalizeCodexModel 会剥掉
+// upstreamModel 的 effort 后缀，只有原始模型名还留着。
+func extractOpenAIReasoningEffortFromBody(account *Account, body []byte, modelCandidates ...string) *string {
 	reasoningEffort := strings.TrimSpace(gjson.GetBytes(body, "reasoning.effort").String())
 	if reasoningEffort == "" {
 		reasoningEffort = strings.TrimSpace(gjson.GetBytes(body, "reasoning_effort").String())
 	}
 	if reasoningEffort != "" {
-		normalized := normalizeOpenAIReasoningEffortForModel(reasoningEffort, firstNonEmpty(modelCandidates...))
+		normalized := normalizeOpenAIReasoningEffortForAccountModel(account, reasoningEffort, firstNonEmpty(modelCandidates...))
 		if normalized == "" {
 			return nil
 		}
@@ -2262,8 +2444,8 @@ func getOpenAIRequestBodyMap(_ *gin.Context, body []byte) (map[string]any, error
 }
 
 // extractOpenAIReasoningEffort 的模型候选语义同 extractOpenAIReasoningEffortFromBody。
-func extractOpenAIReasoningEffort(reqBody map[string]any, modelCandidates ...string) *string {
-	if value, present := getOpenAIReasoningEffortFromReqBody(reqBody, firstNonEmpty(modelCandidates...)); present {
+func extractOpenAIReasoningEffort(account *Account, reqBody map[string]any, modelCandidates ...string) *string {
+	if value, present := getOpenAIReasoningEffortFromReqBody(account, reqBody, firstNonEmpty(modelCandidates...)); present {
 		if value == "" {
 			return nil
 		}
@@ -2323,10 +2505,32 @@ func normalizeOpenAIReasoningEffort(raw string) string {
 }
 
 func normalizeOpenAIReasoningEffortForModel(raw, model string) string {
-	if strings.EqualFold(strings.TrimSpace(raw), "max") && supportsOpenAIReasoningEffortMax(model) {
+	return normalizeOpenAIReasoningEffortForAccountModel(nil, raw, model)
+}
+
+// normalizeOpenAIReasoningEffortForAccountModel is normalizeOpenAIReasoningEffortForModel
+// with the account's synced upstream model metadata consulted for max support.
+func normalizeOpenAIReasoningEffortForAccountModel(account *Account, raw, model string) string {
+	if strings.EqualFold(strings.TrimSpace(raw), "max") && accountSupportsOpenAIReasoningEffortMax(account, model) {
 		return "max"
 	}
 	return normalizeOpenAIReasoningEffort(raw)
+}
+
+// accountSupportsOpenAIReasoningEffortMax prefers the reasoning levels synced
+// from the account's upstream model catalog, so a new model gains (or loses)
+// max by re-syncing upstream models instead of a code change. Without synced
+// levels it falls back to the built-in model-family list.
+func accountSupportsOpenAIReasoningEffortMax(account *Account, model string) bool {
+	if metadata, ok := account.GetUpstreamModelMetadata(model); ok && len(metadata.SupportedReasoningLevels) > 0 {
+		for _, level := range metadata.SupportedReasoningLevels {
+			if normalizeReasoningLevel(level) == "max" {
+				return true
+			}
+		}
+		return false
+	}
+	return supportsOpenAIReasoningEffortMax(model)
 }
 
 // supportsOpenAIReasoningEffortMax reports model families whose upstream scale
