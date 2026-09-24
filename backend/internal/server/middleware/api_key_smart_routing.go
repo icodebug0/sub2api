@@ -24,15 +24,16 @@ func resolveSmartRoutingKey(c *gin.Context, keys *service.APIKeyService, gateway
 	discovery := c.Request.Method == http.MethodGet && path == "/models"
 	inspection := c.Request.Method == http.MethodGet && (path == "/usage" || path == "/sub2api/billing")
 	textRequest := c.Request.Method == http.MethodPost && (path == "/chat/completions" || path == "/responses" || path == "/responses/compact")
-	if !discovery && !inspection && !textRequest {
-		AbortWithError(c, 400, "SMART_ROUTING_ENDPOINT_UNSUPPORTED", "Smart routing supports HTTP Chat Completions and Responses; use a fixed-group key for other endpoints")
+	imageRequest := c.Request.Method == http.MethodPost && (path == "/images/generations" || path == "/images/edits" || path == "/images/variations")
+	if !discovery && !inspection && !textRequest && !imageRequest {
+		AbortWithError(c, 400, "SMART_ROUTING_ENDPOINT_UNSUPPORTED", "Smart routing supports HTTP Chat Completions, Responses, and Image Generation; use a fixed-group key for other endpoints")
 		return nil, false
 	}
 	model, previousResponseID := "", ""
 	compact := path == "/responses/compact"
 	needsResponses := compact
 	imageIntent := false
-	if textRequest {
+	if textRequest || imageRequest {
 		body, err := httputil.ReadRequestBodyWithPrealloc(c.Request)
 		if err != nil {
 			status := http.StatusBadRequest
@@ -45,11 +46,18 @@ func resolveSmartRoutingKey(c *gin.Context, keys *service.APIKeyService, gateway
 		}
 		requestmodel.ResetRequestBody(c.Request, body)
 		value := gjson.GetBytes(body, "model")
-		if !gjson.ValidBytes(body) || value.Type != gjson.String || strings.TrimSpace(value.String()) == "" {
+		if !gjson.ValidBytes(body) {
+			AbortWithError(c, 400, "INVALID_REQUEST", "Invalid request body")
+			return nil, false
+		}
+		if value.Type == gjson.String && strings.TrimSpace(value.String()) != "" {
+			model = value.String()
+		} else if imageRequest {
+			model = "dall-e-2"
+		} else {
 			AbortWithError(c, 400, "INVALID_REQUEST", "A non-empty model is required for smart routing")
 			return nil, false
 		}
-		model = value.String()
 		// Reject ambiguous model fields before choosing any billing group.
 		for _, candidate := range requestmodel.FromBodyCandidates(c.FullPath(), c.GetHeader("Content-Type"), body) {
 			if candidate != model {
@@ -58,11 +66,7 @@ func resolveSmartRoutingKey(c *gin.Context, keys *service.APIKeyService, gateway
 			}
 		}
 		previousResponseID = strings.TrimSpace(gjson.GetBytes(body, "previous_response_id").String())
-		imageIntent = service.IsExplicitImageGenerationIntent(path, model, body)
-		if imageIntent {
-			AbortWithError(c, 400, "SMART_ROUTING_ENDPOINT_UNSUPPORTED", "Use a fixed-group key for image generation")
-			return nil, false
-		}
+		imageIntent = imageRequest || service.IsExplicitImageGenerationIntent(path, model, body)
 		if path == "/responses" && service.HasCompactionTriggerInInput(body) {
 			needsResponses = true
 			compact = !gjson.GetBytes(body, "stream").Bool()
@@ -108,8 +112,25 @@ func resolveSmartRoutingKey(c *gin.Context, keys *service.APIKeyService, gateway
 				continue
 			}
 		}
+		if imageIntent && !service.GroupAllowsImageGeneration(candidate.Group) {
+			continue
+		}
+		if imageRequest {
+			if !candidate.Group.ModelAllowlist.Allows(model) {
+				continue
+			}
+			available, err := gateway.SmartRoutingAvailable(c.Request.Context(), candidate, model, service.OpenAIEndpointCapabilityChatCompletions, false)
+			if err != nil {
+				AbortWithError(c, 503, "SMART_ROUTING_UNAVAILABLE", "Unable to check routing availability")
+				return nil, false
+			}
+			if available {
+				return candidate, true
+			}
+			continue
+		}
 		capability := service.OpenAIEndpointCapabilityChatCompletions
-		if needsResponses && candidate.Group.Platform == service.PlatformOpenAI {
+		if (needsResponses || imageIntent) && candidate.Group.Platform == service.PlatformOpenAI {
 			capability = service.OpenAIEndpointCapabilityResponses
 		}
 		available, err := gateway.SmartRoutingAvailable(c.Request.Context(), candidate, model, capability, compact)

@@ -43,7 +43,7 @@ func TestSmartRoutingRejectsBeforeSelectingGroup(t *testing.T) {
 		{name: "body too large", method: http.MethodPost, path: "/v1/responses", body: `{"model":"gpt-4o"}`, bodyLimit: 4, status: 413, code: "INVALID_REQUEST"},
 		{name: "embeddings", method: http.MethodPost, path: "/v1/embeddings", body: `{"model":"text-embedding-3-small"}`, status: 400, code: "SMART_ROUTING_ENDPOINT_UNSUPPORTED"},
 		{name: "websocket responses", method: http.MethodGet, path: "/v1/responses", status: 400, code: "SMART_ROUTING_ENDPOINT_UNSUPPORTED"},
-		{name: "images", method: http.MethodPost, path: "/v1/images/generations", body: `{"model":"gpt-image-1"}`, status: 400, code: "SMART_ROUTING_ENDPOINT_UNSUPPORTED"},
+		{name: "audio unsupported", method: http.MethodPost, path: "/v1/audio/transcriptions", body: `{"model":"whisper-1"}`, status: 400, code: "SMART_ROUTING_ENDPOINT_UNSUPPORTED"},
 		{name: "codex unsupported", method: http.MethodPost, path: "/backend-api/codex/embeddings", body: `{"model":"gpt-4o"}`, status: 400, code: "SMART_ROUTING_ENDPOINT_UNSUPPORTED"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
