@@ -1,8 +1,11 @@
 package handler
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,6 +14,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/pkg/ip"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/logger"
 	"github.com/Wei-Shaw/sub2api/internal/pkg/openai_compat"
+	"github.com/Wei-Shaw/sub2api/internal/pkg/requestmodel"
 	middleware2 "github.com/Wei-Shaw/sub2api/internal/server/middleware"
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -97,7 +101,7 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		return
 	}
 	if service.IsGPTImageGenerationModel(reqModel) {
-		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "This model is not supported on the Chat Completions endpoint")
+		h.handleImageChatCompletions(c, reqModel, reqStream, body)
 		return
 	}
 
@@ -431,4 +435,213 @@ func resolveOpenAIUpstreamEndpoint(c *gin.Context, account *service.Account, res
 		return EndpointChatCompletions
 	}
 	return GetUpstreamEndpoint(c, account.Platform)
+}
+
+type bufferedResponseWriter struct {
+	gin.ResponseWriter
+	body       *bytes.Buffer
+	statusCode int
+	header     http.Header
+}
+
+func (w *bufferedResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *bufferedResponseWriter) Write(b []byte) (int, error) {
+	return w.body.Write(b)
+}
+
+func (w *bufferedResponseWriter) WriteString(s string) (int, error) {
+	return w.body.WriteString(s)
+}
+
+func (w *bufferedResponseWriter) WriteHeader(statusCode int) {
+	w.statusCode = statusCode
+}
+
+func (w *bufferedResponseWriter) Status() int {
+	if w.statusCode == 0 {
+		return http.StatusOK
+	}
+	return w.statusCode
+}
+
+func (w *bufferedResponseWriter) Written() bool {
+	return w.statusCode != 0 || w.body.Len() > 0
+}
+
+func (w *bufferedResponseWriter) Flush() {}
+
+func extractPromptFromChatBody(body []byte) string {
+	messages := gjson.GetBytes(body, "messages").Array()
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Get("role").String() == "user" {
+			content := msg.Get("content")
+			if content.Type == gjson.String {
+				return strings.TrimSpace(content.String())
+			}
+			if content.IsArray() {
+				var parts []string
+				for _, part := range content.Array() {
+					if part.Get("type").String() == "text" {
+						parts = append(parts, part.Get("text").String())
+					}
+				}
+				if len(parts) > 0 {
+					return strings.TrimSpace(strings.Join(parts, "\n"))
+				}
+			}
+		}
+	}
+	if len(messages) > 0 {
+		return strings.TrimSpace(messages[len(messages)-1].Get("content").String())
+	}
+	return ""
+}
+
+func (h *OpenAIGatewayHandler) handleImageChatCompletions(c *gin.Context, reqModel string, reqStream bool, originalBody []byte) {
+	prompt := extractPromptFromChatBody(originalBody)
+	if prompt == "" {
+		h.errorResponse(c, http.StatusBadRequest, "invalid_request_error", "No prompt found in messages")
+		return
+	}
+
+	imagesPayload := map[string]any{
+		"model":  reqModel,
+		"prompt": prompt,
+	}
+	if size := gjson.GetBytes(originalBody, "size").String(); size != "" {
+		imagesPayload["size"] = size
+	}
+	if quality := gjson.GetBytes(originalBody, "quality").String(); quality != "" {
+		imagesPayload["quality"] = quality
+	}
+	imagesBytes, err := json.Marshal(imagesPayload)
+	if err != nil {
+		h.errorResponse(c, http.StatusInternalServerError, "api_error", "Failed to construct image request")
+		return
+	}
+
+	origWriter := c.Writer
+	origBody := c.Request.Body
+	origPath := c.Request.URL.Path
+
+	bufWriter := &bufferedResponseWriter{
+		ResponseWriter: origWriter,
+		body:           &bytes.Buffer{},
+		header:         make(http.Header),
+	}
+
+	c.Writer = bufWriter
+	requestmodel.ResetRequestBody(c.Request, imagesBytes)
+	c.Request.Header.Set("Content-Type", "application/json")
+	c.Request.URL.Path = "/v1/images/generations"
+
+	h.Images(c)
+
+	c.Writer = origWriter
+	c.Request.Body = origBody
+	c.Request.URL.Path = origPath
+
+	statusCode := bufWriter.Status()
+	respBytes := bufWriter.body.Bytes()
+
+	if statusCode != http.StatusOK {
+		c.Data(statusCode, "application/json", respBytes)
+		return
+	}
+
+	var imgURL string
+	if dataArr := gjson.GetBytes(respBytes, "data").Array(); len(dataArr) > 0 {
+		first := dataArr[0]
+		if url := first.Get("url").String(); url != "" {
+			imgURL = url
+		} else if b64 := first.Get("b64_json").String(); b64 != "" {
+			imgURL = "data:image/png;base64," + b64
+		}
+	}
+
+	if imgURL == "" {
+		c.Data(http.StatusInternalServerError, "application/json", respBytes)
+		return
+	}
+
+	markdownContent := fmt.Sprintf("![image](%s)", imgURL)
+	created := gjson.GetBytes(respBytes, "created").Int()
+	if created == 0 {
+		created = time.Now().Unix()
+	}
+	chatcmplID := fmt.Sprintf("chatcmpl-img-%d", time.Now().UnixNano())
+
+	if reqStream {
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		c.Header("X-Accel-Buffering", "no")
+
+		chunk1 := gin.H{
+			"id":      chatcmplID,
+			"object":  "chat.completion.chunk",
+			"created": created,
+			"model":   reqModel,
+			"choices": []gin.H{
+				{
+					"index": 0,
+					"delta": gin.H{
+						"role":    "assistant",
+						"content": markdownContent,
+					},
+					"finish_reason": nil,
+				},
+			},
+		}
+		chunk2 := gin.H{
+			"id":      chatcmplID,
+			"object":  "chat.completion.chunk",
+			"created": created,
+			"model":   reqModel,
+			"choices": []gin.H{
+				{
+					"index":         0,
+					"delta":         gin.H{},
+					"finish_reason": "stop",
+				},
+			},
+		}
+		b1, _ := json.Marshal(chunk1)
+		b2, _ := json.Marshal(chunk2)
+		_, _ = c.Writer.Write([]byte("data: " + string(b1) + "\n\n"))
+		_, _ = c.Writer.Write([]byte("data: " + string(b2) + "\n\n"))
+		_, _ = c.Writer.Write([]byte("data: [DONE]\n\n"))
+		if flusher, ok := c.Writer.(http.Flusher); ok {
+			flusher.Flush()
+		}
+	} else {
+		c.JSON(http.StatusOK, gin.H{
+			"id":      chatcmplID,
+			"object":  "chat.completion",
+			"created": created,
+			"model":   reqModel,
+			"choices": []gin.H{
+				{
+					"index": 0,
+					"message": gin.H{
+						"role":    "assistant",
+						"content": markdownContent,
+					},
+					"finish_reason": "stop",
+				},
+			},
+			"usage": gin.H{
+				"prompt_tokens":     10,
+				"completion_tokens": 50,
+				"total_tokens":      60,
+			},
+		})
+	}
 }
