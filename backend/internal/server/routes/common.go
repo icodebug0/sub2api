@@ -3,6 +3,7 @@ package routes
 import (
 	"net/http"
 
+	"github.com/Wei-Shaw/sub2api/internal/handler"
 	"github.com/gin-gonic/gin"
 )
 
@@ -12,6 +13,10 @@ func RegisterCommonRoutes(r *gin.Engine) {
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "ok"})
 	})
+
+	// 本地图片缓存公开访问端点（无需鉴权，3小时TTL自动过期）
+	r.GET("/v1/images/cache/:filename", handler.HandleGetCachedImage)
+	r.HEAD("/v1/images/cache/:filename", handler.HandleGetCachedImage)
 
 	// Claude Code 遥测日志（忽略，直接返回200）
 	r.POST("/api/event_logging/batch", func(c *gin.Context) {

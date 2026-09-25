@@ -571,7 +571,8 @@ func (h *OpenAIGatewayHandler) handleImageChatCompletions(c *gin.Context, reqMod
 		return
 	}
 
-	markdownContent := fmt.Sprintf("![image](%s)", imgURL)
+	cachedURL := CacheImage(c.Request, imgURL)
+	markdownContent := fmt.Sprintf("![image](%s)", cachedURL)
 	created := gjson.GetBytes(respBytes, "created").Int()
 	if created == 0 {
 		created = time.Now().Unix()
