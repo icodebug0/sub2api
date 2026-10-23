@@ -64,11 +64,6 @@
 </tr>
 
 <tr>
-<td width="180"><a href="https://shop.bmoplus.com/?utm_source=github"><img src="assets/partners/logos/bmoplus.jpg" alt="bmoplus" width="150"></a></td>
-<td>本プロジェクトにご支援いただいた BmoPlus に感謝いたします！BmoPlusは、AIサブスクリプションのヘビーユーザー向けに特化した信頼性の高いAIアカウントサービスプロバイダーであり、安定した ChatGPT Plus / ChatGPT Pro (完全保証) / Claude Pro / Super Grok / Gemini Pro の公式代行チャージおよび即納アカウントを提供しています。こちらの<a href="https://shop.bmoplus.com/?utm_source=github">BmoPlus AIアカウント専門店/代行チャージ</a>経由でご登録・ご注文いただいたユーザー様は、GPTを 公式サイト価格の約1割（90% OFF） という驚異的な価格でご利用いただけます！</td>
-</tr>
-
-<tr>
 <td width="180"><a href="https://bestproxy.com/?keyword=a2e8iuol"><img src="assets/partners/logos/bestproxy.png" alt="bestproxy" width="150"></a></td>
 <td>Bestproxy のご支援に感謝します！<a href="https://bestproxy.com/?keyword=a2e8iuol">Bestproxy</a> は高純度の住宅IPを提供し、1アカウント1IP専有をサポートしています。実際の家庭ネットワークとフィンガープリント分離を組み合わせることで、リンク環境の分離を実現し、関連付けによるリスク管理の確率を低減します。</td>
 </tr>
@@ -156,6 +151,16 @@
 <tr>
 <td width="180"><a href="https://modelflare.dev/ja/sign-up?utm_source=github&utm_campaign=sub2api"><img src="assets/partners/logos/modelflare.png" alt="Modelflare" width="150"></a></td>
 <td>Modelflare：フルスペック、安定、水増しなし。世界の SOTA モデルを、より低いコストで。米国拠点の Havenbyte LLC が運営する Modelflare は、一般的な互換プロトコルを通じて GPT、Claude、Gemini、Grok などの主要モデルに対応し、さらに 40 以上の画像・動画モデルも利用できます。注目はキャッシュ補償です。対象の OpenAI グループ（価格優先・安定・プレミアム）は、1 日のキャッシュヒット率をそれぞれ 65%、75%、85% で保証します。対象リクエストがこの水準に達しない場合、Modelflare が差額を返金し、精算後に利用状況ダッシュボードで確認できます。特別オファー：US$20 を 1 回チャージすると、価格倍率 0.015 倍の GPT 割引グループが解放されます。US$50 を 1 回チャージすると、価格倍率 0.03 倍の Claude 割引グループが解放されます。<a href="https://modelflare.dev/ja/sign-up?utm_source=github&utm_campaign=sub2api">こちらの専用リンク</a>から登録して始めましょう。</td>
+</tr>
+
+<tr>
+<td width="180"><a href="https://x.com/chenju_ai"><img src="assets/partners/logos/chenju_ai.png" alt="Chenju" width="150"></a></td>
+<td><a href="https://x.com/chenju_ai">陈局（Chenju）</a>様、本プロジェクトへのご支援ありがとうございます！これはおそらく、この欄で唯一「登録しなくていい」広告枠です。良いオープンソースには対価が払われるべき——というわけで、陈局がご祝儀を包んで作者に一杯おごります。X で <a href="https://x.com/chenju_ai">陈局</a> を見つけて、中継サービスや上流の話、雑談でもどうぞ。</td>
+</tr>
+
+<tr>
+<td width="180"><a href="https://t.me/AACC8888888"><img src="assets/partners/logos/ooko.ai.png" alt="ooko.ai" width="150"></a></td>
+<td>🔑 AI アカウント高価買取｜Gemini · Claude · GPT｜メイン・サブアカウントすべて買取、チャネル問わず歓迎｜従量制での支払いに対応｜大手の一次リソースを求めています、KEY は私が用意します。<br>WeChat：Liuyou-zawd｜Telegram：<a href="https://t.me/AACC8888888">AACC8888888</a></td>
 </tr>
 
 </table>
