@@ -31,7 +31,7 @@ func resolveSmartRoutingKey(c *gin.Context, keys *service.APIKeyService, gateway
 	}
 	model, previousResponseID := "", ""
 	compact := path == "/responses/compact"
-	needsResponses := compact
+	needsResponses := compact || path == "/responses"
 	imageIntent := false
 	if textRequest || imageRequest {
 		body, err := httputil.ReadRequestBodyWithPrealloc(c.Request)
