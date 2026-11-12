@@ -71,12 +71,14 @@ func (s *APIKeyService) SmartRoutingKeys(ctx context.Context, key *APIKey) ([]*A
 		candidate := *key
 		candidateUser := *user
 		candidateUser.UserGroupRPMOverride = nil
+		candidateUser.UserGroupRPMOverrideGroupID = 0
 		if s.userGroupRateRepo != nil {
 			override, err := s.userGroupRateRepo.GetRPMOverrideByUserAndGroup(ctx, user.ID, id)
 			if err != nil {
 				return nil, err
 			}
 			candidateUser.UserGroupRPMOverride = override
+			candidateUser.UserGroupRPMOverrideGroupID = id
 		}
 		candidate.User = &candidateUser
 		candidate.GroupID = &group.ID

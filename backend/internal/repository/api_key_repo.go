@@ -817,12 +817,19 @@ func (r *apiKeyRepository) ListKeysByGroupID(ctx context.Context, groupID int64)
 // apiKeyGroupIDPredicate matches both fixed-group keys and smart-routing keys
 // that include the group in their ordered route list. The JSON column is kept
 // as an array of numbers, so ValueContains emits a typed JSONB containment
-// predicate on PostgreSQL without string matching false positives.
+// predicate on PostgreSQL without string matching false positives, while SQLite
+// tests query element equality via JSON_EACH using a scalar value.
 func apiKeyGroupIDPredicate(groupID int64) func(*entsql.Selector) {
 	return func(selector *entsql.Selector) {
+		var containsPred *entsql.Predicate
+		if selector.Dialect() == dialect.SQLite {
+			containsPred = sqljson.ValueContains(apikey.FieldRoutingGroupIds, groupID)
+		} else {
+			containsPred = sqljson.ValueContains(apikey.FieldRoutingGroupIds, []int64{groupID})
+		}
 		selector.Where(entsql.Or(
 			entsql.EQ(selector.C(apikey.FieldGroupID), groupID),
-			sqljson.ValueContains(apikey.FieldRoutingGroupIds, []int64{groupID}),
+			containsPred,
 		))
 	}
 }
